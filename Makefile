@@ -1,19 +1,16 @@
 
 # Makefile Settings
 .SHELL									= /bin/bash
-.DEFAULT_GOAL 					:= install
+.DEFAULT_GOAL 					:= all
 
 # User-defined Variables
 config 									?= $(abspath clusters/singlenode.yaml)
 name 										?= $(basename $(notdir $(config)))
 
 # Constants
-override install_dir		:= $(abspath ./.clusters)
-override cluster_dir		:= $(install_dir)/$(name)
-override kubeconfig			:= $(cluster_dir)/kubeconfig
 override context 				:= kind-$(name)
-override kubectl				:= kubectl --context $(context) --kubeconfig $(kubeconfig)
-override linkerd				:= linkerd --context $(context) --kubeconfig $(kubeconfig)
+override kubectl				:= kubectl --context $(context)
+override linkerd				:= linkerd --context $(context)
 
 # Helpers
 .PHONY: .print
@@ -26,42 +23,43 @@ define install
 	@type -P $@ > /dev/null 2>&1 || brew install $@
 endef
 
-$(install_dir) $(cluster_dir):
-	@mkdir -p $@
+.PHONY: all
+all: install
 
 .PHONY: install
-install: $(kubeconfig)
-
-$(kubeconfig): | $(cluster_dir)
+install:
 	$(install kind)
-	@kind create cluster --config $(config) --name $(name) --kubeconfig $@
+	$(install kubectl)
+	@kind get clusters | grep -q $(name) && \
+		echo "Reusing existing cluster: $(name)" || \
+		kind create cluster --config $(config) --name $(name) --wait 60s
 
 .PHONY: clean
 clean:
 	$(install kind)
 	@kind delete cluster --name $(name)
-	@rm -rf $(cluster_dir)
 
-export-kubeconfig: $(kubeconfig)
-	@kind export kubeconfig --name $(name)
+.PHONY: export-logs
+export-logs:
+	@kind export logs --name $(name) logs/$(name)
 
-export-logs: $(kubeconfig)
-	@kind export logs --name $(name) $(cluster_dir)/logs
-
-install-linkerd: $(kubeconfig)
-	$(install kubectl)
+.PHONY: install-linkerd
+install-linkerd: install
 	$(install linkerd)
-	@$(linkerd) check --pre
-	@$(linkerd) install | $(kubectl) apply -f -
-	@$(linkerd) check
+	@$(linkerd) check &> /dev/null || ( \
+		$(linkerd) check --pre && \
+		$(linkerd) install | $(kubectl) apply -f - && \
+		$(linkerd) check)
 
+.PHONY: clean-linkerd
 clean-linkerd:
 	$(install kubectl)
 	$(install linkerd)
 	@$(linkerd) install --ignore-cluster | $(kubectl) delete --ignore-not-found=true -f -
 
+.PHONY: linkerd-dashboard
 linkerd-dashboard:
-	@linkerd dashboard
+	@$(linkerd) dashboard
 
 # install-ingress-nginx: .install-helm
 # 	-@helm delete -n kube-system nginx-ingress
@@ -70,11 +68,18 @@ linkerd-dashboard:
 # 		--set controller.service.nodePorts.http=30080 \
 # 		--set controller.service.nodePorts.https=30443
 
-# install-argocd: .install-kubectl
-# 	-@kubectl create namespace argocd
-# 	@kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-# 	@kubectl apply -n argocd -f argocd/nginx-ingress.yaml
+install-argocd: install
+	@type -P argocd > /dev/null 2>&1 || (brew tap argoproj/tap && brew install argoproj/tap/argocd)
+	@$(kubectl) get ns argocd > /dev/null || $(kubectl) create namespace argocd
+	@$(kubectl) apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-# install-argocd-cli:
-# 	@brew tap argoproj/tap
-# 	@brew install argoproj/tap/argocd
+argocd-dashboard-port ?= 50850
+
+argocd-dashboard:
+	@echo "ArgoCD dashboard available at:"
+	@echo "  https://localhost:$(argocd-dashboard-port)"
+	@echo "Username: admin"
+	@echo "Password: $$($(kubectl) get pods -n argocd -l app.kubernetes.io/name=argocd-server -o name | cut -d'/' -f 2)"
+	@echo "Opening ArgoCD dashboard in the default browser"
+	@open https://localhost:$(argocd-dashboard-port)
+	@$(kubectl) port-forward svc/argocd-server -n argocd $(argocd-dashboard-port):443 > /dev/null
