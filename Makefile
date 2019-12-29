@@ -1,118 +1,57 @@
-#---------------------------------------------------
-## Usage: make [command] [arg=value ...]
-## |
-## Available commands:
-## |
-#---------------------------------------------------
+SHELL						= /bin/bash
+.DEFAULT_GOAL		:= help
 
-# Makefile Settings
-.SHELL									= /bin/bash
-.DEFAULT_GOAL 					:= install
+name ?= kind
+wait ?= 60s
 
-# User-defined Variables
-config 									?= $(abspath clusters/singlenode.yaml)
-name 										?= $(basename $(notdir $(config)))
+CLUSTER_CONFIGS := $(wildcard *cluster.yaml *cluster)
+CLUSTER_CONFIGS := $(CLUSTER_CONFIGS:%.yaml=%)
 
-# Constants
-override context 				:= kind-$(name)
-override kubectl	 			:= kubectl --context $(context)
-override linkerd				:= linkerd --context $(context)
+export KUBE_HOME 			:= $(abspath .kube)
+export KUBE_CONFIG 		:= $(KUBE_HOME)/config
+export KUBE_CTX 			:= kind-$(name)
 
-# Private Targets
-.PHONY: .print
-.print:
-	@$(foreach V,$(sort $(.VARIABLES)), \
-		$(if $(filter-out environment% default automatic, \
-		$(origin $V)),$(warning $V=$($V) ($(value $V)))))
+export kubectl					:= kubectl --context $(KUBE_CTX) --kubeconfig $(KUBE_CONFIG)
 
-.PHONY:
-.brew-%:
-	@type -P $* > /dev/null 2>&1 || brew install $*
+tools: Brewfile
+	@brew bundle check || brew bundle install
 
-# Public Targets
+$(KUBE_HOME):
+	@mkdir -p $@
 
-## help | prints this help message
-.PHONY: help
-help: Makefile
-	@echo
-	@sed -n "s/^##/ /p" $< | column -t -s "|"
-	@echo
+.PHONY: $(CLUSTER_CONFIGS)
+$(CLUSTER_CONFIGS): $(KUBE_HOME)
+	@kind create cluster --name $(name) --kubeconfig $(KUBE_CONFIG) --config $(@:%=%.yaml) --wait $(wait)
 
-## install (default) | creates a new kubernetes cluster using kind
-.PHONY: install
-install: .brew-kind .brew-kubectl
-	@kind get clusters | grep -q $(name) && \
-		echo "Reusing existing cluster: $(name)" || \
-		kind create cluster --config $(config) --name $(name) --wait 60s
+clean:
+	@kind delete cluster --name $(name) --kubeconfig $(KUBE_CONFIG)
+	@rm -rf logs/$(name)
 
-## port-mappings | displays host-to-container port mappings to control plan and woker nodes
-.PHONY:	port-mappings
-port-mappings:
-	@docker ps  -f NAME=$(name) --format "table {{.Names}}\t{{.Ports}}"
-
-## clean | deletes the kind k8s cluster
-.PHONY: clean
-clean: .brew-kind
-	@kind delete cluster --name $(name)
-
-## clean-all | deletes all kind k8s clusters
-.PHONY: clean-all
-clean-all: .brew-kind
+clean-all-clusters:
 	@kind get clusters | xargs -L1 -I% kind delete cluster --name %
+	@rm -rf $(KUBE_HOME)
 
-## export-logs | exports docker and kubernetes logs to the "logs" directory
-.PHONY: export-logs
-export-logs: .brew-kind
-	@kind export logs --name $(name) logs/$(name)
+.PHONY: logs
+logs:
+	@kind export logs logs/$(name) --name $(name)
 
-## install-linkerd | installs linkerd service mesh
-.PHONY: install-linkerd
-install-linkerd: install .brew-linkerd
-	@$(linkerd) check &> /dev/null || ( \
-		$(linkerd) check --pre && \
-		$(linkerd) install | $(kubectl) apply -f - && \
-		$(linkerd) check)
+kubeconfig:
+	@kind export kubeconfig --name $(name)
 
-## clean-linkerd | uninstalls linkerd
-.PHONY: clean-linkerd
-clean-linkerd: .brew-kubectl .brew-linkerd
-	@$(linkerd) install --ignore-cluster | $(kubectl) delete --ignore-not-found=true -f -
+## Common commands for installing, uninstalling subsystems
+DIRS 				:= $(dir $(wildcard */Makefile))
+INSTALLDIRS := $(DIRS:%/=install-%)
+CLEANDIRS 	:= $(DIRS:%/=clean-%)
+OPENDIRS 		:= $(DIRS:%/=open-%)
 
-## dashboard-linkerd | opens the linkderd dashboard
-.PHONY: linkerd-dashboard
-dashboard-linkderd: .brew-linkerd
-	@$(linkerd) dashboard
+install-all: $(INSTALLDIRS)
+clean-all: $(CLEANDIRS)
 
-## install-argocd | installs the ArgoCD continuous delivery tool
-install-argocd: install .brew-kubectl
-	@type -P argocd > /dev/null 2>&1 || (brew tap argoproj/tap && brew install argoproj/tap/argocd)
-	@$(kubectl) get ns argocd > /dev/null || $(kubectl) create namespace argocd
-	@$(kubectl) apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+$(INSTALLDIRS):
+	@$(MAKE) -C $(@:install-%=%) install
 
-## clean-argocd | uninstalls ArgoCD
-clean-argocd: .brew-kubectl
-	@$(kubectl) delete --ignore-not-found=true -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-	@$(kubectl) delete ns argocd
+$(CLEANDIRS):
+	@$(MAKE) -C $(@:clean-%=%) clean
 
-argocd-dashboard-port ?= 50850
-
-## dashboard-argocd | Displays the ArgoCD dashboard
-dashboard-argocd: .brew-kubectl
-	@echo "ArgoCD dashboard available at:"
-	@echo "  https://localhost:$(argocd-dashboard-port)"
-	@echo "Username: admin"
-	@echo "Password: $$($(kubectl) get pods -n argocd -l app.kubernetes.io/name=argocd-server -o name | cut -d'/' -f 2)"
-	@echo "Opening ArgoCD dashboard in the default browser"
-	@open https://localhost:$(argocd-dashboard-port)
-	@$(kubectl) port-forward svc/argocd-server -n argocd $(argocd-dashboard-port):443 > /dev/null
-
-## install-nginx-ingress | installs NGINX Ingress Controller
-install-nginx-ingress: .brew-helm
-	@helm install nginx-ingress stable/nginx-ingress \
-		--set controller.service.type=NodePort \
-		--set controller.service.nodePorts.http=30080 \
-		--set controller.service.nodePorts.https=30443
-
-## clean-nginx-ingress | uninstalls NGINX Ingress Controller
-clean-nginx-ingress: .brew-helm
-	@helm delete nginx-ingress
+$(OPENDIRS):
+	@$(MAKE) -C $(@:open-%=%) open
