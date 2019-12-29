@@ -2,3 +2,5 @@
 logs/
 
 Brewfile.lock.json
+
+.kube
