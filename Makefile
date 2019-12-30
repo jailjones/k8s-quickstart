@@ -12,6 +12,7 @@ export KUBE_CONFIG 		:= $(KUBE_HOME)/config
 export KUBE_CTX 			:= kind-$(name)
 
 export kubectl					:= kubectl --context $(KUBE_CTX) --kubeconfig $(KUBE_CONFIG)
+export helm							:= helm --kube-context $(KUBE_CTX) --kubeconfig $(KUBE_CONFIG)
 
 tools: Brewfile
 	@brew bundle check || brew bundle install

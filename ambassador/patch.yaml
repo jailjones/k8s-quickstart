@@ -1,0 +1,20 @@
+spec:
+  template:
+    spec:
+      containers:
+        - name: ambassador
+          ports:
+            - containerPort: 8080
+              hostPort: 80
+              name: http
+              protocol: TCP
+            - containerPort: 8443
+              hostPort: 443
+              name: https
+              protocol: TCP
+      nodeSelector:
+        ingress-ready: "true"
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          operator: Equal
+          effect: NoSchedule
